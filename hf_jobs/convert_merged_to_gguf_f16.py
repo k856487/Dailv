@@ -27,7 +27,7 @@ from huggingface_hub import HfApi, login, snapshot_download
 
 MERGED_ID = os.environ.get("MERGED_MODEL", "k86574/qwen25-7b-paperpass-rewrite-merged")
 OUTPUT_REPO = os.environ.get("OUTPUT_REPO", "k86574/qwen25-7b-paperpass-rewrite-gguf")
-OUT_NAME = "qwen25-7b-paperpass-rewrite-f16.gguf"
+OUT_NAME = os.environ.get("OUT_NAME", "qwen25-7b-paperpass-rewrite-f16.gguf")
 
 
 def run(cmd: list[str], desc: str) -> None:
