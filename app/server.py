@@ -1,4 +1,4 @@
-"""Local page for Dailv 1.7. Rewrite path is dailv.main (ship CLI), not a second decoder."""
+"""Dailv 1.7 本地页面。改写由同目录的 dailv.py 完成。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-# Align with SHIP_NOTE before dailv.py reads these at import time.
-# CLI default BON is 4; the shipped product eval uses 8.
+# 这些值要在 import dailv 之前写好，页面固定用这一套。
 os.environ.setdefault("DAILV_BON_N", "8")
 os.environ.setdefault("DAILV_PROBE_REINJECT", "1")
 os.environ.setdefault("DAILV_AGGRESSIVE_RETRY", "1")
@@ -30,9 +29,7 @@ PORT = int(os.environ.get("DAILV_WEB_PORT", "8780"))
 MAX_CHARS = 20000
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "index.html"
-DAILV_PATH = Path(
-    os.environ.get("DAILV_PY", str(HERE.parent / "tools" / "dailv" / "dailv.py"))
-)
+DAILV_PATH = HERE / "dailv.py"
 
 _lock = threading.Lock()
 _busy = False
@@ -90,7 +87,7 @@ def ensure_resident() -> None:
 
 
 def stream_rewrite(text: str, emit, drop_pct: int, sim_pct: int) -> None:
-    """Run the ship CLI. Each finished ~200-char unit is emitted before the next starts."""
+    """改写一段。每完成大约 200 字就先发给页面。"""
     import queue as queue_mod
 
     events: queue_mod.Queue = queue_mod.Queue()

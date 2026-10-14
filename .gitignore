@@ -6,4 +6,4 @@
 .cache/
 .env
 models/
-web/llama-server.log
+.venv/

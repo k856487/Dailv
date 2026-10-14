@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Dailv — 本地 llama.cpp 学术段落改写 CLI。
-
-  Dailv / Dailv1.7 → Qwen3-1.7B（约 200 字/段，默认主线）
-  Dailv1.5         → 1.5B 句级（约 90 字/句，难降 AI 率段落兜底）
-
-本地已弃用 Dailv3 / Dailv7（Hub 仍保留：k86574/Dailv3、k86574/Dailv7）。
-
-长文按最适字数自动拆分，改写后按原文段落结构拼接。
-"""
+"""Dailv 1.7 改写实现。由 app/server.py 调用，用来降低中文文本的 AI 率。"""
 
 from __future__ import annotations
 
@@ -2912,6 +2904,3 @@ def main(argv: list[str] | None = None) -> int:
     _stop_think()
     return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
