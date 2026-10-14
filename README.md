@@ -13,7 +13,6 @@ https://huggingface.co/k86574/Dailv1.7
 文件名为 `Dailv1.7-f16.gguf`。下载：
 
 ```bash
-hf auth login
 hf download k86574/Dailv1.7 Dailv1.7-f16.gguf --local-dir D:\hf_models\paperpass\gguf
 ```
 
