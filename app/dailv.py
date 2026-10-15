@@ -20,8 +20,8 @@ from dataclasses import dataclass
 # Runtime defaults
 # ---------------------------------------------------------------------------
 
-THREADS = int(os.environ.get("DAILV_THREADS", "16"))
-DEVICE = os.environ.get("DAILV_DEVICE", "Vulkan0")
+THREADS = int(os.environ.get("DAILV_THREADS", str(os.cpu_count() or 4)))
+DEVICE = os.environ.get("DAILV_DEVICE", "").strip()
 # 打字机节奏：对齐本机 ~80–90 t/s；积压大时批量追赶，避免拖在生成之后
 CHAR_DELAY = float(os.environ.get("DAILV_CHAR_DELAY", "0.010"))
 CHAR_DELAY_FAST = 0.003
@@ -34,7 +34,7 @@ CACHE_TYPE_K = os.environ.get("DAILV_CACHE_K", "").strip()
 CACHE_TYPE_V = os.environ.get("DAILV_CACHE_V", "").strip()
 # 常驻 llama-server；命中同 alias 时走 --server-base，端到端可从 ~3s → ~0.6s
 # 设 DAILV_SERVER=0 / off / none 可禁用
-_SERVER_ENV = os.environ.get("DAILV_SERVER", "http://127.0.0.1:8765").strip()
+_SERVER_ENV = os.environ.get("DAILV_SERVER", "").strip()
 SERVER_URL = "" if _SERVER_ENV.lower() in ("", "0", "off", "none", "false") else _SERVER_ENV
 SERVER_ALIAS = {
     "1.7b": "dailv1.7",
@@ -309,6 +309,10 @@ def _env(key: str, default: str) -> str:
     return os.environ.get(key, default)
 
 
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEFAULT_15 = os.path.join(_REPO, "models", "Dailv1.5-f16.gguf")
+
+
 PROFILES: dict[str, Profile] = {
     "1.7b": Profile(
         name="1.7b",
@@ -341,10 +345,7 @@ PROFILES: dict[str, Profile] = {
     "1.5b": Profile(
         name="1.5b",
         label="1.5",
-        model_path=_env(
-            "DAILV15_MODEL",
-            r"D:\hf_models\paperpass\gguf\Dailv1.5-f16.gguf",
-        ),
+        model_path=_env("DAILV15_MODEL", _DEFAULT_15),
         ngl=int(_env("DAILV15_NGL", "99")),
         ctx=int(_env("DAILV15_CTX", "1024")),
         n_predict=int(_env("DAILV15_N_PREDICT", "256")),
@@ -576,26 +577,19 @@ def _server_models(url: str, timeout: float = 1.5) -> list[str]:
 
 
 def resolve_server_base(profile: Profile) -> str | None:
-    """If a matching llama-server is up, return its base URL."""
-    alias = SERVER_ALIAS.get(profile.name, f"dailv{profile.label}").lower()
-    candidates: list[str] = []
+    """Return a llama-server base URL when one is already listening."""
     if SERVER_URL:
-        candidates.append(SERVER_URL.rstrip("/"))
+        if _server_models(SERVER_URL):
+            return SERVER_URL.rstrip("/")
+        return None
+    alias = SERVER_ALIAS.get(profile.name, f"dailv{profile.label}").lower()
     default_port = 8765 if profile.name == "1.7b" else 8766
-    default_url = f"http://127.0.0.1:{default_port}"
-    if default_url not in candidates:
-        candidates.append(default_url)
-    for url in candidates:
-        ids = _server_models(url)
-        if not ids:
-            continue
-        if "__alive__" in ids:
-            # /v1/models 不可用但 health ok：按默认端口信任
-            if url.rstrip("/").endswith(f":{default_port}"):
-                return url
-            continue
-        if alias in ids or profile.name.lower() in ids:
-            return url
+    url = f"http://127.0.0.1:{default_port}"
+    ids = _server_models(url)
+    if not ids:
+        return None
+    if "__alive__" in ids or alias in ids or profile.name.lower() in ids:
+        return url
     return None
 
 
@@ -622,8 +616,6 @@ def build_server_cmd(profile: Profile, port: int | None = None) -> list[str]:
         server,
         "-m",
         profile.model_path,
-        "-dev",
-        DEVICE,
         "-ngl",
         str(profile.ngl),
         "-t",
@@ -641,6 +633,8 @@ def build_server_cmd(profile: Profile, port: int | None = None) -> list[str]:
         "--reasoning",
         profile.reasoning or "off",
     ]
+    if DEVICE:
+        cmd += ["-dev", DEVICE]
     if CACHE_TYPE_K:
         cmd += ["-ctk", CACHE_TYPE_K]
     if CACHE_TYPE_V:
@@ -2063,8 +2057,6 @@ def build_cmd(
         cmd += [
             "-m",
             profile.model_path,
-            "-dev",
-            DEVICE,
             "-ngl",
             str(ngl),
             "-t",
@@ -2107,6 +2099,8 @@ def build_cmd(
         cmd += ["--repeat-penalty", str(rp)]
     if profile.reasoning is not None:
         cmd += ["--reasoning", profile.reasoning]
+    if DEVICE:
+        cmd += ["-dev", DEVICE]
     return cmd
 
 
@@ -2138,7 +2132,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"错误: 模型不存在: {profile.model_path}", file=sys.stderr)
         hints = {
             "1.7b": "提示: 设置环境变量 DAILV17_MODEL 指向 F16 GGUF（默认 D:\\hf_models\\paperpass\\gguf\\Dailv1.7-f16.gguf）。",
-            "1.5b": "提示: 设置环境变量 DAILV15_MODEL 指向 F16 GGUF（默认 D:\\hf_models\\paperpass\\gguf\\Dailv1.5-f16.gguf）。",
+            "1.5b": "提示: 将 Dailv1.5-f16.gguf 放到 models/ 目录，或设置环境变量 DAILV15_MODEL。",
         }
         if profile.name in hints:
             print(hints[profile.name], file=sys.stderr)

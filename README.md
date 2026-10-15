@@ -1,32 +1,30 @@
-﻿# Dailv
+﻿# Dailv 1.5
 
-降低中文文本 AI 率的本地改写工具。将中文学术段落改写成更接近人工撰写的表述，保留术语、数字与原意。
+降低中文文本 AI 率的本地改写工具。将中文学术句子改写成更接近人工撰写的表述，保留术语、数字与原意。
 
 目前只支持中文。
 
 ## 模型
 
-改写使用 Dailv 1.7 权重（GGUF F16，约 3.4 GB）：
+权重为 Dailv 1.5（GGUF F16，约 3.1 GB）：
 
-https://huggingface.co/k86574/Dailv1.7
-
-文件名为 `Dailv1.7-f16.gguf`。下载：
+https://huggingface.co/k86574/Dailv1.5
 
 ```bash
-hf download k86574/Dailv1.7 Dailv1.7-f16.gguf --local-dir D:\hf_models\paperpass\gguf
+hf download k86574/Dailv1.5 Dailv1.5-f16.gguf --local-dir models
 ```
 
-程序默认读取 `D:\hf_models\paperpass\gguf\Dailv1.7-f16.gguf`。文件放在其他位置时，将 `DAILV17_MODEL` 设为完整路径。
+下载后的文件应位于 `models/Dailv1.5-f16.gguf`。放在其他位置时，将 `DAILV15_MODEL` 设为完整路径。
 
 ## 环境
 
 | 项目 | 要求 |
 | --- | --- |
-| 系统 | Windows 10 及以上。Linux 使用同一启动命令 |
+| 系统 | Windows、Linux 或 macOS |
 | Python | 3.10 及以上 |
-| 推理 | [llama.cpp](https://github.com/ggml-org/llama.cpp) 的 `llama-server`，位于 `PATH`，或由 `DAILV_LLAMA_SERVER` 指定 |
-| 显卡 | 建议使用 Vulkan 或 CUDA，权重尽量载入显存 |
-| 磁盘 | 模型约 3.4 GB，另需检测器缓存 |
+| 推理 | [llama.cpp](https://github.com/ggml-org/llama.cpp) 的 `llama-cli`。已有 `llama-server` 时可复用，见下方 |
+| 显卡 | 可选。有显卡时由 llama.cpp 自行选择设备 |
+| 磁盘 | 模型约 3.1 GB，另需检测器缓存 |
 | 检测器 | 选优使用 `yuchuantian/AIGC_detector_zhv3`，首次运行时自动下载 |
 
 ```bash
@@ -35,12 +33,15 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Linux 与 macOS 将激活命令换成 `source .venv/bin/activate`。
+
 ## 目录
 
 ```
 app/server.py      页面服务
 app/index.html     页面
 app/dailv.py       改写实现
+models/            放置 Dailv1.5-f16.gguf
 requirements.txt   检测器依赖
 ```
 
@@ -50,13 +51,17 @@ requirements.txt   检测器依赖
 python app/server.py
 ```
 
-在浏览器打开 http://127.0.0.1:8780 。页头可调节 AI 率降幅（默认 20%）和原文相似度（默认 70%）。
+在浏览器打开 http://127.0.0.1:8780 。
 
-## 配置
+若本机已经用 llama.cpp 起好推理服务，可在启动页面前指定地址，页面会直接复用，不再单独加载权重：
 
-| 变量 | 默认 | 作用 |
-| --- | --- | --- |
-| `DAILV17_MODEL` | `D:\hf_models\paperpass\gguf\Dailv1.7-f16.gguf` | 权重路径 |
-| `DAILV_LLAMA_SERVER` | 在 `PATH` 中查找 `llama-server` | 推理程序 |
-| `DAILV_SERVER` | `http://127.0.0.1:8765` | 推理服务地址。设为 `0` 时由页面拉起 |
-| `DAILV_WEB_PORT` | `8780` | 页面端口 |
+```bash
+set DAILV_SERVER=http://127.0.0.1:8080
+python app/server.py
+```
+
+自行启动推理服务的示例（端口与设备按本机情况修改）：
+
+```bash
+llama-server -m models/Dailv1.5-f16.gguf --host 127.0.0.1 --port 8080 -c 1024
+```

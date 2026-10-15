@@ -1,22 +1,18 @@
-"""Dailv 1.7 本地页面。改写由同目录的 dailv.py 完成。"""
+"""Dailv 1.5 本地页面。改写由同目录的 dailv.py 完成。"""
 
 from __future__ import annotations
 
 import io
 import json
 import os
-import subprocess
 import sys
 import threading
-import time
 import traceback
-from difflib import SequenceMatcher
 from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-# 这些值要在 import dailv 之前写好，页面固定用这一套。
 os.environ.setdefault("DAILV_BON_N", "8")
 os.environ.setdefault("DAILV_PROBE_REINJECT", "1")
 os.environ.setdefault("DAILV_AGGRESSIVE_RETRY", "1")
@@ -53,57 +49,16 @@ def _load_dailv():
 
 
 dailv = _load_dailv()
-_BASE_17 = dailv.PROFILES["1.7b"]
+_BASE_15 = dailv.PROFILES["1.5b"]
 
 
-def clamp_pct(value, lo: int, hi: int, default: int) -> int:
-    try:
-        value = int(value)
-    except (TypeError, ValueError):
-        value = default
-    return min(hi, max(lo, value))
-
-
-def ensure_resident() -> None:
-    """Start the 1.7 llama-server when it is not already listening."""
-    if dailv.resolve_server_base(_BASE_17):
-        return
-    if not os.path.isfile(_BASE_17.model_path):
-        print(f"模型不存在: {_BASE_17.model_path}", flush=True)
-        return
-    cmd = dailv.build_server_cmd(_BASE_17)
-    log_path = HERE / "llama-server.log"
-    log = open(log_path, "a", encoding="utf-8")
-    flags = 0
-    if os.name == "nt":
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-    subprocess.Popen(cmd, stdout=log, stderr=log, creationflags=flags)
-    for _ in range(90):
-        time.sleep(1)
-        if dailv.resolve_server_base(_BASE_17):
-            print(f"resident http://127.0.0.1:8765", flush=True)
-            return
-    print("resident 仍在加载，改写会在它就绪后复用。", flush=True)
-
-
-def stream_rewrite(text: str, emit, drop_pct: int, sim_pct: int) -> None:
-    """改写一段。每完成大约 200 字就先发给页面。"""
+def stream_rewrite(text: str, emit) -> None:
+    """改写一段。每完成一句就先发给页面。"""
     import queue as queue_mod
 
     events: queue_mod.Queue = queue_mod.Queue()
-    argv = ["--profile", "1.7b", "--quiet-progress", text]
+    argv = ["--profile", "1.5b", "--quiet-progress", text]
     original_pace = dailv._pace_out
-    drop_floor = drop_pct / 100.0
-    sim_floor = sim_pct / 100.0
-    saved_floor = dailv._AGGRESSIVE_DROP_FLOOR
-    saved_weak = dailv._WEAK_DROP
-    saved_rank = dailv._cand_rank
-
-    def rank(src: str, out: str, *, ai_before=None):
-        base = saved_rank(src, out, ai_before=ai_before)
-        sim = SequenceMatcher(None, src or "", out or "").ratio()
-        meet = 0 if sim + 1e-9 >= sim_floor else 1
-        return (base[0], meet) + tuple(base[1:])
 
     def pace(chunk: str, ahead, *, steady: bool) -> None:
         if chunk:
@@ -127,9 +82,6 @@ def stream_rewrite(text: str, emit, drop_pct: int, sim_pct: int) -> None:
             dailv._pace_out = original_pace
 
     thread = threading.Thread(target=runner, daemon=True)
-    dailv._AGGRESSIVE_DROP_FLOOR = drop_floor
-    dailv._WEAK_DROP = drop_floor
-    dailv._cand_rank = rank
     thread.start()
     parts: list[str] = []
     try:
@@ -149,28 +101,16 @@ def stream_rewrite(text: str, emit, drop_pct: int, sim_pct: int) -> None:
             return
     finally:
         thread.join()
-        dailv._AGGRESSIVE_DROP_FLOOR = saved_floor
-        dailv._WEAK_DROP = saved_weak
-        dailv._cand_rank = saved_rank
 
 
 def status() -> dict:
-    profile = dailv.PROFILES["1.7b"]
-    base = dailv.resolve_server_base(profile)
+    profile = _BASE_15
     return {
         "ok": True,
-        "profile": "1.7",
+        "profile": "1.5",
         "model": Path(profile.model_path).name,
-        "server": base or "",
-        "server_on": bool(base),
         "busy": _busy,
         "bon": int(os.environ.get("DAILV_BON_N", "8")),
-        "drop_default": DROP_DEFAULT,
-        "sim_default": SIM_DEFAULT,
-        "drop_min": DROP_MIN,
-        "drop_max": DROP_MAX,
-        "sim_min": SIM_MIN,
-        "sim_max": SIM_MAX,
     }
 
 
@@ -244,8 +184,6 @@ class Handler(BaseHTTPRequestHandler):
         if len(text) > MAX_CHARS:
             self._json(400, {"ok": False, "error": f"单次最多 {MAX_CHARS} 字"})
             return
-        drop_pct = clamp_pct(data.get("drop_pct"), DROP_MIN, DROP_MAX, DROP_DEFAULT)
-        sim_pct = clamp_pct(data.get("sim_pct"), SIM_MIN, SIM_MAX, SIM_DEFAULT)
         if not _lock.acquire(blocking=False):
             self._json(409, {"ok": False, "error": "正在改写上一段，请稍候"})
             return
@@ -257,7 +195,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._sse(obj)
 
             try:
-                stream_rewrite(text, emit, drop_pct, sim_pct)
+                stream_rewrite(text, emit)
             except Exception as e:
                 traceback.print_exc()
                 self._sse({"type": "error", "error": str(e) or "改写失败"})
@@ -268,10 +206,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    ensure_resident()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     info = status()
-    print(f"Dailv 1.7  http://{HOST}:{PORT}", flush=True)
+    print(f"Dailv 1.5  http://{HOST}:{PORT}", flush=True)
     print(f"model={info['model']}  BoN={info['bon']}", flush=True)
     try:
         httpd.serve_forever()

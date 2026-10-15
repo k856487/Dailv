@@ -5,5 +5,4 @@
 *.err
 .cache/
 .env
-models/
 .venv/

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dailv 1.7</title>
+  <title>Dailv 1.5</title>
   <style>
     :root {
       --bg: #efe8dc;
@@ -51,31 +51,6 @@
       margin: 6px 0 0;
       color: var(--muted);
       font-size: 13px;
-    }
-    .thresholds {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      margin-bottom: 6px;
-    }
-    .thresholds label {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--muted);
-      font-size: 12px;
-      letter-spacing: 0.06em;
-    }
-    .thresholds b {
-      min-width: 3.2em;
-      color: var(--ink);
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-    }
-    .thresholds input[type="range"] {
-      width: 100px;
-      accent-color: var(--accent);
-      cursor: pointer;
     }
     .grid {
       display: grid;
@@ -173,24 +148,13 @@
   <div class="wrap">
     <header>
       <div>
-        <h1>Dailv <span>1.7</span></h1>
+        <h1>Dailv <span>1.5</span></h1>
         <p class="sub">降低中文文本的 AI 率。目前只支持中文。</p>
-      </div>
-      <div class="thresholds">
-        <label>AI率降幅
-          <input id="drop" type="range" min="10" max="40" step="5" value="20" title="低于这个降幅会再改一版" />
-          <b id="dropVal">20%</b>
-        </label>
-        <label>原文相似度
-          <input id="sim" type="range" min="50" max="85" step="5" value="70" title="优先留下和原文至少这么像的候选" />
-          <b id="simVal">70%</b>
-        </label>
-      </div>
     </header>
     <div class="grid">
       <section class="card">
         <div class="bar"><span>原文</span><span id="srcCount">0 字</span></div>
-        <textarea id="src" placeholder="贴上待改写段落。长文会按约 200 字切开，改完再按原结构拼回。"></textarea>
+        <textarea id="src" placeholder="贴上待改写段落。长文会按句子切开，改完再按原结构拼回。"></textarea>
       </section>
       <section class="card">
         <div class="bar"><span>改写</span><span id="outCount">0 字</span></div>
@@ -212,10 +176,6 @@
     const go = document.getElementById("go");
     const err = document.getElementById("err");
     const foot = document.getElementById("foot");
-    const drop = document.getElementById("drop");
-    const sim = document.getElementById("sim");
-    const dropVal = document.getElementById("dropVal");
-    const simVal = document.getElementById("simVal");
     const srcCount = document.getElementById("srcCount");
     const outCount = document.getElementById("outCount");
     const hint = document.getElementById("hint");
@@ -312,16 +272,11 @@
       if (!pumpTask) pumpTask = pump().finally(() => { pumpTask = null; });
       return pumpTask;
     }
-    function showPct(input, label) {
-      label.textContent = input.value + "%";
-    }
-    drop.addEventListener("input", () => showPct(drop, dropVal));
-    sim.addEventListener("input", () => showPct(sim, simVal));
     async function refreshStatus() {
       try {
         const r = await fetch("/api/status");
         const j = await r.json();
-        foot.textContent = "权重 " + j.model + " · BoN " + j.bon + " · 探针回填 · 检测器选优";
+        foot.textContent = "权重 " + j.model + " · 目前只支持中文";
       } catch (e) {
         foot.textContent = "页面服务未连接";
       }
@@ -335,8 +290,6 @@
       }
       showError("");
       go.disabled = true;
-      drop.disabled = true;
-      sim.disabled = true;
       segQueue = [];
       streamDone = false;
       typing = false;
@@ -355,11 +308,7 @@
         const r = await fetch("/api/rewrite", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            text,
-            drop_pct: Number(drop.value),
-            sim_pct: Number(sim.value)
-          })
+          body: JSON.stringify({ text })
         });
         if (!r.ok || !r.body) {
           let msg = "改写失败";
@@ -400,8 +349,6 @@
         else if (failed) setOut(PLACEHOLDER, true);
         clearInterval(timer);
         go.disabled = false;
-        drop.disabled = false;
-        sim.disabled = false;
         hint.textContent = "Ctrl + Enter 开始";
         refreshStatus();
       }
