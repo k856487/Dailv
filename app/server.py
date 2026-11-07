@@ -34,9 +34,11 @@ DAILV_PATH = HERE / "dailv.py"
 _lock = threading.Lock()
 _busy = False
 # Percent sliders. Defaults are the live recipe: drop floor 20%, ship mean similarity ~70%.
-# Ranges stay near those points so a drag cannot demand a near-copy or an impossible drop.
+# Sim slider is a floor (prefer at least this similar); engine also hard-caps at 85% so
+# no setting can prefer near-copies above that.
 DROP_MIN, DROP_MAX, DROP_DEFAULT = 10, 40, 20
 SIM_MIN, SIM_MAX, SIM_DEFAULT = 50, 85, 70
+SIM_CEIL = 0.85
 
 
 def _load_dailv():
@@ -102,8 +104,10 @@ def stream_rewrite(text: str, emit, drop_pct: int, sim_pct: int) -> None:
     def rank(src: str, out: str, *, ai_before=None):
         base = saved_rank(src, out, ai_before=ai_before)
         sim = SequenceMatcher(None, src or "", out or "").ratio()
-        meet = 0 if sim + 1e-9 >= sim_floor else 1
-        return (base[0], meet) + tuple(base[1:])
+        # Lower is better: over-ceiling first (never prefer >85%), then under-floor.
+        over = 0 if sim <= SIM_CEIL + 1e-9 else 1
+        under = 0 if sim + 1e-9 >= sim_floor else 1
+        return (base[0], over, under) + tuple(base[1:])
 
     def pace(chunk: str, ahead, *, steady: bool) -> None:
         if chunk:

@@ -1040,6 +1040,8 @@ _AGGRESSIVE_DROP_FLOOR = float(
 # Soft length ceiling while scoring style-break samples (id15 list bodies)
 _AGG_LEN_HI = float(os.environ.get("DAILV_AGG_LEN_HI", "1.7"))
 _WEAK_DROP = float(os.environ.get("DAILV_WEAK_DROP", "0.20"))
+# 改写与原文字符相似度硬顶：超过则在选优里劣于 ≤ 顶的候选（避免几乎照抄）
+_SIM_CEIL = float(os.environ.get("DAILV_SIM_CEIL", "0.85"))
 _FALLBACK_SRC = os.environ.get("DAILV_FALLBACK_SRC", "0") == "1"
 _BON_TEMPS = (0.55, 0.70, 0.85, 0.65, 0.75, 0.95, 0.50, 0.80)
 _DET_REPO = "yuchuantian/AIGC_detector_zhv3"
@@ -1701,14 +1703,15 @@ def _cand_rank(src: str, out: str, *, ai_before: float | None = None) -> tuple:
         if scored is not None:
             after = float(scored)
             drop = float(ai_before) - after
+    over = 0 if sim <= _SIM_CEIL + 1e-9 else 1
     if fail is None:
         if not _drop_floor_applicable(ai_before):
-            # Low-headroom pass pool: fluency → paraphrase → keep AI low
-            return (0, flu, sim, after, len_pen, "")
-        # Normal pass pool: fluency first, then maximize drop
-        return (0, flu, -drop, len_pen, -sim, "")
-    # Fail pool: severity → fluency → closer length → drop
-    return (sev, flu, len_pen, -drop, -sim, fail)
+            # Low-headroom pass pool: stay ≤ sim ceiling → fluency → paraphrase → keep AI low
+            return (0, over, flu, sim, after, len_pen, "")
+        # Normal pass pool: stay ≤ sim ceiling → fluency → maximize drop
+        return (0, over, flu, -drop, len_pen, -sim, "")
+    # Fail pool: severity → over-ceiling → fluency → closer length → drop
+    return (sev, over, flu, len_pen, -drop, -sim, fail)
 
 
 def _cand_drop(src: str, out: str, ai_before: float | None) -> float | None:
