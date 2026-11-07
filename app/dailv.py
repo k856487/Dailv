@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Dailv 1.7 改写实现。由 app/server.py 调用，用来降低中文文本的 AI 率。"""
+"""Dailv — 本地 llama.cpp 学术段落改写 CLI。
+
+  Dailv / Dailv1.7 → Qwen3-1.7B（约 200 字/段，默认主线）
+  Dailv1.5         → 1.5B 句级（约 90 字/句，难降 AI 率段落兜底）
+
+本地已弃用 Dailv3 / Dailv7（Hub 仍保留：k86574/Dailv3、k86574/Dailv7）。
+
+长文按最适字数自动拆分，改写后按原文段落结构拼接。
+"""
 
 from __future__ import annotations
 
@@ -14,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
@@ -120,6 +129,13 @@ _PROTECT_RE = re.compile(
     r"度|级|届|条|种|元|秒|年|％|%)|"
     # --- 文献角标 [1] [1-3] ---
     r"\[\d+(?:\s*[-–—,~～]\s*\d+)*\]|"
+    # --- 英文多词术语（须在单词规则前，避免 Spring Boot / Element Plus 被拆开）---
+    r"(?i:Spring\s+Boot|MyBatis(?:-Plus)?|Element\s+Plus|Ant\s+Design|"
+    r"Vue\.?js|Node\.?js|Next\.?js|Nuxt\.?js|React\s+Native|React\.?js|"
+    r"Visual\s+Studio(?:\s+Code)?|VS\s*Code|Git\s*Hub|Open\s*AI|"
+    r"Large\s+Language\s+Models?|et\s+al\.?)|"
+    r"[A-Za-z][A-Za-z0-9.+]*(?:[-‐‑–][A-Za-z0-9.+]+)*"
+    r"(?:\s+[A-Za-z][A-Za-z0-9.+]*(?:[-‐‑–][A-Za-z0-9.+]+)*){1,3}|"
     # --- 英文单词 / 缩写（含 BLEU-4、F1、H5；放最后以免抢 DOI、Fig）---
     r"[A-Za-z]{2,}(?:[-‐‑–][A-Za-z0-9]+)*|"
     r"[A-Za-z]\d+"
@@ -318,7 +334,7 @@ PROFILES: dict[str, Profile] = {
             r"D:\hf_models\paperpass\gguf\Dailv1.7-f16.gguf",
         ),
         ngl=int(_env("DAILV17_NGL", "99")),
-        ctx=int(_env("DAILV17_CTX", "1024")),
+        ctx=int(_env("DAILV17_CTX", "2048")),
         n_predict=int(_env("DAILV17_N_PREDICT", "1024")),
         target_chars=200,
         max_chars=280,
@@ -1086,6 +1102,21 @@ _EN_ACRONYM_KEEP = (
     "GPU",
     "AI",
     "F1",
+    # 常见工程栈（门控 missing_en；保护侧另见多词规则）
+    "Spring",
+    "Boot",
+    "Spring Boot",
+    "MyBatis",
+    "MyBatis-Plus",
+    "Vue",
+    "Element",
+    "Element Plus",
+    "React",
+    "Node",
+    "Docker",
+    "Redis",
+    "Kafka",
+    "Nginx",
 )
 # Severe length: never ship if still beyond this after compress (prefer 原文)
 _SEVERE_LEN_HI = float(os.environ.get("DAILV_SEVERE_LEN_HI", "1.8"))
@@ -1742,6 +1773,11 @@ def _rewrite_max_tokens(n_chars: int, *, mode: str = "normal") -> int:
     return min(640, max(80, int(n * 1.5) + 16))
 
 
+def _page_cancelled() -> bool:
+    flag = globals().get("_PAGE_CANCEL")
+    return bool(flag is not None and flag.is_set())
+
+
 def _produce_server(
     cmd: list[str],
     q: queue.Queue,
@@ -1799,7 +1835,20 @@ def _produce_server(
     pending = ""
     try:
         with opener.open(req, timeout=180) as resp:
+            def _watch_cancel() -> None:
+                flag = globals().get("_PAGE_CANCEL")
+                if flag is None or not flag.wait(180):
+                    return
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+
+            threading.Thread(target=_watch_cancel, daemon=True).start()
             while True:
+                if _page_cancelled():
+                    result.update(rc=3, err="")
+                    return
                 raw = resp.read(512)
                 if not raw:
                     break
@@ -1845,10 +1894,16 @@ def _produce_server(
                             if piece:
                                 _enqueue(q, piece.replace("\r", ""), collected)
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:500]
-        result.update(rc=1, err=f"server HTTP {e.code}: {detail}")
+        if _page_cancelled():
+            result.update(rc=3, err="")
+        else:
+            detail = e.read().decode("utf-8", "replace")[:500]
+            result.update(rc=1, err=f"server HTTP {e.code}: {detail}")
     except Exception as e:
-        result.update(rc=1, err=f"server 请求失败: {e}")
+        if _page_cancelled():
+            result.update(rc=3, err="")
+        else:
+            result.update(rc=1, err=f"server 请求失败: {e}")
     finally:
         q.put(_DONE)
 
@@ -1884,6 +1939,10 @@ def _produce_llama(
 
     try:
         while True:
+            if _page_cancelled():
+                proc.kill()
+                result.update(rc=3, err="")
+                break
             b = proc.stdout.read(1)
             if not b:
                 break
@@ -1965,7 +2024,18 @@ def _produce_llama(
                 err_chunks.append(proc.stderr.read() or b"")
         except Exception:
             pass
-        result["rc"] = proc.wait()
+        if result.get("rc") == 3:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+            result["rc"] = 3
+        else:
+            result["rc"] = proc.wait()
         result["stderr"] = b"".join(err_chunks).decode("utf-8", "replace")
         q.put(_DONE)
 
@@ -2033,6 +2103,8 @@ def stream_rewrite(
 
     rc = int(result.get("rc", 1))
     err_text = result.get("stderr") or ""
+    if rc == 3:
+        return 3, strip_llama_prompt_echo("".join(collected))
     if rc != 0:
         if "OutOfDeviceMemory" in err_text or "failed to allocate" in err_text.lower():
             print(
@@ -2320,15 +2392,18 @@ def main(argv: list[str] | None = None) -> int:
 
     def rewrite_unit(chunk: str, suffix: str, is_last: bool) -> tuple[int, str]:
         """Generate one chunk fully. Display is handled by the pipeline."""
+        if _page_cancelled():
+            return 3, ""
         end = "\n" if is_last else (suffix or "")
         src = _gate_src(chunk)
         ai_before = _ai_prob(src) if _DROP_RANK else None
         list_mode = _is_list_template(src)
         short_lim = int(os.environ.get("DAILV_SHORT_CHARS", "160"))
         short_mode = len(src) <= short_lim
-        # Short paras: rewrite plain text (no protect fragments). Fragment path
-        # was the main 101/103 runaway — each shard inherited full-para max_tokens.
-        gen_in = src if short_mode else chunk
+        # 短段默认不走片段拼接（那条路曾经把整段 token 预算套到每个碎片上）。
+        # 句中若有书名、引号、数字或中文数字，仍用占位符原文，避免保护被短段旁路拆掉。
+        has_protect = bool(bag and placeholder_ids(chunk))
+        gen_in = chunk if has_protect or not short_mode else src
         unit_sys = sys_prompt
         if list_mode:
             unit_sys += _LIST_REWRITE_HINT
@@ -2377,33 +2452,61 @@ def main(argv: list[str] | None = None) -> int:
         cands: list[tuple[str, str | None, float | str]] = []
         bon_temps = _SHORT_BON_TEMPS if short_mode else _BON_TEMPS
         temps = list(bon_temps[:_BON_N]) if use_gate else [None]
-        for i, temp in enumerate(temps):
+
+        def _bon_one(i: int, temp: float | None) -> tuple[int, int, str, str | None, float | str]:
+            """Return (index, rc, body, gate_reason, temp_tag)."""
+            if _page_cancelled():
+                return i, 3, "", None, temp if temp is not None else "default"
             rc, body = _gen_once(
                 gen_in,
                 temperature=temp,
                 system_prompt=unit_sys,
                 max_tokens=bon_max_tok,
             )
+            tag: float | str = temp if temp is not None else "default"
             if rc != 0:
-                if not cands:
-                    return rc, ""
+                return i, rc, "", None, tag
+            body2, reason = _score_body(body)
+            return i, 0, body2, reason, tag
+
+        # llama-server 默认约 4 slot：并发生成，避免 BoN=8 串行拖到数十秒
+        workers = min(4, max(1, len(temps)))
+        raw_rows: list[tuple[int, int, str, str | None, float | str]] = []
+        if workers == 1 or len(temps) == 1:
+            for i, temp in enumerate(temps):
+                raw_rows.append(_bon_one(i, temp))
+                if raw_rows[-1][1] == 3 or _page_cancelled():
+                    return 3, ""
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = [pool.submit(_bon_one, i, temp) for i, temp in enumerate(temps)]
+                for fut in futs:
+                    row = fut.result()
+                    raw_rows.append(row)
+                    if row[1] == 3 or _page_cancelled():
+                        return 3, ""
+        raw_rows.sort(key=lambda r: r[0])
+        for i, rc, body, reason, tag in raw_rows:
+            if rc == 3:
+                return 3, ""
+            if rc != 0:
                 continue
-            body, reason = _score_body(body)
-            cands.append((body, reason, temp if temp is not None else "default"))
+            cands.append((body, reason, tag))
             if not cfg.quiet_progress and _BON_N > 1 and use_gate:
                 drop_s = ""
                 d = _cand_drop(src, body, ai_before)
                 if d is not None:
                     drop_s = f" drop={d:.3f}"
                 print(
-                    f"  bon[{i}] t={temp} gate="
+                    f"  bon[{i}] t={tag} gate="
                     f"{'ok' if reason is None else reason} "
                     f"stiff={_stiff_penalty(src, body)}{drop_s}\n",
                     file=sys.stderr,
                 )
 
         if not cands:
-            return 2, ""
+            first_rc = next((r[1] for r in raw_rows if r[1] not in (0, 3)), 2)
+            return int(first_rc) if first_rc else 2, ""
 
         cands.sort(key=lambda c: _cand_rank(src, c[0], ai_before=ai_before))
         body, reason, _ = cands[0]
@@ -2837,6 +2940,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             for i, (chunk, suffix) in enumerate(units):
                 rc, text = rewrite_unit(chunk, suffix, i == len(units) - 1)
+                if rc == 3:
+                    ready.put(("done",))
+                    return
                 if rc != 0:
                     ready.put(("err", rc, i))
                     return
@@ -2898,7 +3004,8 @@ def main(argv: list[str] | None = None) -> int:
         _, text, is_last = item
         _stop_think()
         if not labeled:
-            _out(RESULT_LABEL + "\n\n")
+            if not cfg.quiet_progress:
+                _out(RESULT_LABEL + "\n\n")
             labeled = True
         _pace_out(text, ready, steady=not is_last)
         if not is_last and ready.empty():
@@ -2907,3 +3014,6 @@ def main(argv: list[str] | None = None) -> int:
     _stop_think()
     return 0
 
+
+if __name__ == "__main__":
+    raise SystemExit(main())
